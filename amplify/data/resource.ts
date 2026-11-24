@@ -8,6 +8,9 @@ import { a, defineData, type ClientSchema } from "@aws-amplify/backend";
  * CONTRIBUTOR staff can create and edit content, but not delete it.
  * Site-wide settings (colours, menu, Site Mode, visit info, help chat) can be
  * changed by ADMINISTRATOR, and edited (not deleted) by EDITOR.
+ * Brand, header, footer and Site Mode are Administrator-only fields, so an
+ * Editor can't change them even by calling the API directly. The Admin
+ * dashboard shows each role only the screens it may use (lib/roles.ts).
  */
 const contentRules = (allow: any) => [
   allow.publicApiKey().to(["read"]),
@@ -15,20 +18,27 @@ const contentRules = (allow: any) => [
   allow.groups(["CONTRIBUTOR"]).to(["create", "read", "update"]),
 ];
 
+/** Settings fields only an Administrator may change (everyone may read them). */
+const adminOnlyField = (allow: any) => [
+  allow.publicApiKey().to(["read"]),
+  allow.groups(["ADMINISTRATOR"]),
+  allow.groups(["EDITOR"]).to(["read"]),
+];
+
 const schema = a.schema({
   /** One record with key "site". Each field holds a group of settings as JSON. */
   SiteSettings: a
     .model({
       key: a.id().required(),
-      identity: a.json(), // title, short name, tagline
-      header: a.json(), // official banner text, menu items with Tok Pisin labels
+      identity: a.json().authorization(adminOnlyField), // title, short name, tagline
+      header: a.json().authorization(adminOnlyField), // official banner text, menu items with Tok Pisin labels
       welcome: a.json(), // Director's name, role, initials, message, imagePath, imageAlt
       keyFacts: a.json(), // [{ n, l }]
       sections: a.json(), // homepage section order and visibility
       widgets: a.json(), // announcement bar, back-to-top, help chat on/off
-      siteMode: a.json(), // live / maintenance / soon, with gate texts
+      siteMode: a.json().authorization(adminOnlyField), // live / maintenance / soon, with gate texts
       visit: a.json(), // address, phone, email, hours, fees
-      footer: a.json(), // about text, copyright line
+      footer: a.json().authorization(adminOnlyField), // about text, copyright line
       chat: a.json(), // help chat title, greeting, quick-question buttons
     })
     .identifier(["key"])
