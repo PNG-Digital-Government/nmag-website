@@ -1,76 +1,158 @@
 "use client";
 
 import { Amplify } from "aws-amplify";
-import { fetchAuthSession } from "aws-amplify/auth";
+import { fetchAuthSession, fetchMFAPreference } from "aws-amplify/auth";
 import { Authenticator } from "@aws-amplify/ui-react";
 import "@aws-amplify/ui-react/styles.css";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { amplifyOutputs } from "@/lib/amplify-outputs";
+import { topRole, type Role } from "@/lib/roles";
+import { AdminShell } from "./AdminShell";
+import { MfaSetup } from "./MfaSetup";
+import { useIdleSignOut } from "./useIdleSignOut";
 
 if (amplifyOutputs) Amplify.configure(amplifyOutputs, { ssr: true });
 
-const ROLE_NAMES: Record<string, string> = {
-  ADMINISTRATOR: "Administrator",
-  EDITOR: "Editor",
-  CONTRIBUTOR: "Contributor",
+/** Name shown in each person's authenticator app next to the 6-digit code. */
+const TOTP_ISSUER = "NMAG Admin";
+
+const formFields = {
+  signIn: {
+    username: { label: "Staff email", placeholder: "you@museum.gov.pg" },
+  },
+  forceNewPassword: {
+    password: {
+      label: "Choose a new password",
+      placeholder: "At least 12 characters",
+    },
+  },
+  setupTotp: {
+    QR: { totpIssuer: TOTP_ISSUER },
+    confirmation_code: {
+      label: "6-digit code from your authenticator app",
+      placeholder: "123456",
+    },
+  },
+  confirmSignIn: {
+    confirmation_code: {
+      label: "6-digit code from your authenticator app",
+      placeholder: "123456",
+    },
+  },
 };
 
-const SECTIONS = [
-  "Homepage: hero slides and pictures, key facts, section order",
-  "Director's welcome: message and portrait",
-  "Content: exhibitions, collections, learning cards and news, each with a picture",
-  "Pages & Visit Info: opening hours, entry fees, address, phone, email",
-  "Header & Menu, Footer, Widgets and the help chat's quick questions",
-  "Site Mode: Live, Maintenance or Coming Soon",
-];
-
-function Dashboard({ email, signOut }: { email: string; signOut?: () => void }) {
-  const [roles, setRoles] = useState<string[] | null>(null);
-
-  useEffect(() => {
-    fetchAuthSession()
-      .then((s) => {
-        const groups = s.tokens?.accessToken.payload["cognito:groups"];
-        setRoles(Array.isArray(groups) ? groups.map(String) : []);
-      })
-      .catch(() => setRoles([]));
-  }, []);
-
+function SignInHeader() {
   return (
-    <div>
-      <div className="panel">
-        <div className="eyebrow">NMAG Admin</div>
-        <h1 style={{ fontSize: "1.8rem", margin: ".3rem 0 .5rem" }}>Signed in</h1>
-        <p style={{ margin: 0 }}>
-          {email}
-          {roles && (
-            <>
-              {" · "}
-              {roles.length ? roles.map((r) => ROLE_NAMES[r] ?? r).join(", ") : "No role yet: ask an Administrator to add you to a group."}
-            </>
-          )}
-        </p>
-      </div>
-      <div className="panel">
-        <h2 style={{ fontSize: "1.2rem" }}>Dashboard</h2>
-        <p style={{ color: "var(--muted)" }}>The editing screens are the next stage of the build. They will cover:</p>
-        <ul>
-          {SECTIONS.map((s) => (
-            <li key={s}>{s}</li>
-          ))}
-        </ul>
-      </div>
-      <div style={{ display: "flex", gap: ".75rem", flexWrap: "wrap" }}>
-        <Link className="btn btn-outline" href="/">
-          View the website
-        </Link>
-        <button className="btn btn-primary" type="button" onClick={signOut}>
-          Sign out
-        </button>
+    <div className="auth-head">
+      <img src="/images/nmag-seal.webp" alt="" width={64} height={64} />
+      <div>
+        <div className="eyebrow">Staff only</div>
+        <h1>NMAG Admin sign-in</h1>
+        <p>Sign in with your staff email and password, then the 6-digit code from your authenticator app.</p>
       </div>
     </div>
   );
+}
+
+function SignInFooter() {
+  return (
+    <p className="auth-foot">
+      No account? Ask an NMAG website Administrator to invite you. · <Link href="/">Back to the website</Link>
+    </p>
+  );
+}
+
+type Status =
+  | { state: "checking" }
+  | { state: "needs-mfa" }
+  | { state: "ready"; role: Role | null }
+  | { state: "error"; message: string };
+
+function SignedIn({ email, signOut }: { email: string; signOut: () => void }) {
+  const [status, setStatus] = useState<Status>({ state: "checking" });
+
+  const check = useCallback(async () => {
+    setStatus({ state: "checking" });
+    try {
+      const [session, mfa] = await Promise.all([fetchAuthSession({ forceRefresh: true }), fetchMFAPreference()]);
+      // Cognito requires MFA for every account. This is a second check in case
+      // the user pool was set to optional MFA (see README): nobody reaches the
+      // dashboard until their authenticator app is linked.
+      if (!mfa.enabled?.includes("TOTP")) {
+        setStatus({ state: "needs-mfa" });
+        return;
+      }
+      const groups = session.tokens?.accessToken.payload["cognito:groups"];
+      setStatus({ state: "ready", role: topRole(Array.isArray(groups) ? groups.map(String) : []) });
+    } catch (err) {
+      setStatus({ state: "error", message: err instanceof Error ? err.message : "Could not check your account." });
+    }
+  }, []);
+
+  useEffect(() => {
+    void check();
+  }, [check]);
+
+  useIdleSignOut(signOut);
+
+  if (status.state === "checking") {
+    return (
+      <div className="admin-wrap">
+        <div className="panel" role="status">
+          Checking your account…
+        </div>
+      </div>
+    );
+  }
+
+  if (status.state === "error") {
+    return (
+      <div className="admin-wrap">
+        <div className="panel">
+          <h1 className="admin-h1">Something went wrong</h1>
+          <p>{status.message}</p>
+          <div className="acts">
+            <button className="btn btn-primary" type="button" onClick={() => void check()}>
+              Try again
+            </button>
+            <button className="btn btn-outline" type="button" onClick={signOut}>
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (status.state === "needs-mfa") {
+    return <MfaSetup email={email} issuer={TOTP_ISSUER} onDone={() => void check()} signOut={signOut} />;
+  }
+
+  if (!status.role) {
+    return (
+      <div className="admin-wrap">
+        <div className="panel">
+          <div className="eyebrow">NMAG Admin</div>
+          <h1 className="admin-h1">No role yet</h1>
+          <p>
+            You're signed in as {email}, but you haven't been given a role. Ask an Administrator to add you to the Administrator, Editor or
+            Contributor group, then sign in again.
+          </p>
+          <div className="acts">
+            <Link className="btn btn-outline" href="/">
+              View the website
+            </Link>
+            <button className="btn btn-primary" type="button" onClick={signOut}>
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return <AdminShell email={email} role={status.role} signOut={signOut} />;
 }
 
 export function AdminClient() {
@@ -79,7 +161,7 @@ export function AdminClient() {
       <div className="admin-wrap">
         <div className="panel">
           <div className="eyebrow">NMAG Admin</div>
-          <h1 style={{ fontSize: "1.8rem", margin: ".3rem 0 .5rem" }}>Backend not connected yet</h1>
+          <h1 className="admin-h1">Backend not connected yet</h1>
           <p>
             Staff sign-in needs the Amplify backend. Deploy it on AWS Amplify Hosting, or run <code>npx ampx sandbox</code> locally, then reload
             this page. Until then the website shows its sample content.
@@ -93,9 +175,11 @@ export function AdminClient() {
   }
 
   return (
-    <div className="admin-wrap">
-      <Authenticator hideSignUp>
-        {({ user, signOut }) => <Dashboard email={user?.signInDetails?.loginId ?? user?.username ?? ""} signOut={signOut} />}
+    <div className="admin-auth">
+      <Authenticator hideSignUp formFields={formFields} components={{ Header: SignInHeader, Footer: SignInFooter }}>
+        {({ user, signOut }) => (
+          <SignedIn email={user?.signInDetails?.loginId ?? user?.username ?? ""} signOut={() => signOut?.()} />
+        )}
       </Authenticator>
     </div>
   );
