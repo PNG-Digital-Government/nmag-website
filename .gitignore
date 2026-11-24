@@ -1,0 +1,13 @@
+node_modules/
+.next/
+out/
+.npm/
+next-env.d.ts
+*.tsbuildinfo
+
+# Amplify
+amplify_outputs.json
+.amplify/
+
+.env*.local
+.DS_Store
